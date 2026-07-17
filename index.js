@@ -7,6 +7,7 @@ const {
 const express = require("express");
 const cors = require("cors");
 const { Boom } = require("@hapi/boom");
+const qrcode = require("qrcode-terminal");
 
 const app = express();
 app.use(cors());
@@ -27,7 +28,7 @@ async function connectToWhatsApp() {
   sock = makeWASocket({
     auth: state,
     printQRInTerminal: true,
-    logger: require("pino")({ level: "silent" }), // suppress noisy logs
+    logger: require("pino")({ level: "silent" }),
     markOnlineOnConnect: false,
     connectTimeoutMs: 30000,
   });
@@ -38,6 +39,7 @@ async function connectToWhatsApp() {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
+      qrcode.generate(qr, { small: true });
       console.log("\n📱 Scan the QR code above with WhatsApp on your phone.");
       console.log("   Go to WhatsApp → Linked Devices → Link a Device\n");
     }
@@ -68,7 +70,6 @@ async function connectToWhatsApp() {
 // ─── Helper: normalize phone number ───────────────────────────────────────
 
 function normalizePhone(phone) {
-  // Strip spaces, dashes, parentheses, leading +
   return phone.toString().replace(/[\s\-\(\)\+]/g, "");
 }
 
@@ -82,6 +83,7 @@ app.get("/", (req, res) => {
     endpoints: {
       "POST /validate": "Validate a single number",
       "POST /validate/bulk": "Validate multiple numbers (max 50)",
+      "POST /send": "Send a WhatsApp message",
       "GET /status": "Check connection status",
     },
   });
@@ -189,7 +191,6 @@ app.post("/validate/bulk", async (req, res) => {
         jid: result?.jid ?? null,
       });
 
-      // Small delay between checks to avoid getting flagged
       await new Promise((r) => setTimeout(r, 300));
     } catch (err) {
       results.push({ phone: normalized, exists: false, error: err.message });
@@ -204,6 +205,47 @@ app.post("/validate/bulk", async (req, res) => {
   };
 
   return res.json({ success: true, summary, results });
+});
+
+// ── Send message ──
+app.post("/send", async (req, res) => {
+  if (!isConnected) {
+    return res.status(503).json({
+      success: false,
+      error: "WhatsApp session not ready. Check terminal for QR code.",
+    });
+  }
+
+  const { to, message } = req.body;
+
+  if (!to || !message) {
+    return res.status(400).json({
+      success: false,
+      error: 'Missing "to" or "message" field in request body.',
+    });
+  }
+
+  const normalized = normalizePhone(to);
+
+  if (!/^\d{7,15}$/.test(normalized)) {
+    return res.status(400).json({
+      success: false,
+      error: "Invalid phone number format. Use E.164 without +, e.g. 923001234567",
+    });
+  }
+
+  try {
+    const jid = `${normalized}@s.whatsapp.net`;
+    await sock.sendMessage(jid, { text: message });
+
+    return res.json({ success: true, to: normalized });
+  } catch (err) {
+    console.error("Send error:", err.message);
+    return res.status(500).json({
+      success: false,
+      error: "Failed to send message. " + err.message,
+    });
+  }
 });
 
 // ─── Start ─────────────────────────────────────────────────────────────────
