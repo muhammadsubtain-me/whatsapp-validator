@@ -84,6 +84,7 @@ app.get("/", (req, res) => {
       "POST /validate": "Validate a single number",
       "POST /validate/bulk": "Validate multiple numbers (max 50)",
       "POST /send": "Send a WhatsApp message",
+      "POST /send-delayed": "Send a WhatsApp message after a delay (default 120s)",
       "GET /status": "Check connection status",
     },
   });
@@ -246,6 +247,47 @@ app.post("/send", async (req, res) => {
       error: "Failed to send message. " + err.message,
     });
   }
+});
+
+// ── Send message with delay ──
+app.post("/send-delayed", async (req, res) => {
+  if (!isConnected) {
+    return res.status(503).json({
+      success: false,
+      error: "WhatsApp session not ready. Check terminal for QR code.",
+    });
+  }
+
+  const { to, message, delay = 120 } = req.body;
+
+  if (!to || !message) {
+    return res.status(400).json({
+      success: false,
+      error: 'Missing "to" or "message" field in request body.',
+    });
+  }
+
+  const normalized = normalizePhone(to);
+
+  if (!/^\d{7,15}$/.test(normalized)) {
+    return res.status(400).json({
+      success: false,
+      error: "Invalid phone number format. Use E.164 without +, e.g. 923001234567",
+    });
+  }
+
+  // Respond immediately — message will fire after delay
+  res.json({ success: true, to: normalized, sends_in_seconds: delay });
+
+  setTimeout(async () => {
+    try {
+      const jid = `${normalized}@s.whatsapp.net`;
+      await sock.sendMessage(jid, { text: message });
+      console.log(`✅ Delayed message sent to ${normalized}`);
+    } catch (err) {
+      console.error(`❌ Delayed send failed to ${normalized}:`, err.message);
+    }
+  }, delay * 1000);
 });
 
 // ─── Start ─────────────────────────────────────────────────────────────────
